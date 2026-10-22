@@ -1,0 +1,67 @@
+name: iOS Dock Preview (separate safe app)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ios-dock-preview:
+    name: Build separate iOS Dock preview
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platforms;android-34 build-tools;34.0.0
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Add subtle neighbouring dock magnification
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java')
+          s = p.read_text(encoding='utf-8')
+          changes = [
+              (
+                  '            if (!onTile) hideGlass();',
+                  '            if (!onTile) {\n'
+                  '                hideGlass();\n'
+                  '                animateDockNeighbors(-1);\n'
+                  '            }',
+              ),
+              (
+                  '        View item = (View) card.getParent();\n'
+                  '        if (dockRow && position < COLUMNS) {',
+                  '        animateDockNeighbors(position);\n'
+                  '        View item = (View) card.getParent();\n'
+                  '        if (dockRow && position < COLUMNS) {',
+              ),
+              (
+                  '    /** Refits the glass to the focused holder once the grid layout and tile dimensions settle. */',
+                  "    /**\n     * Optional iOS-style dock wave: a small scale/lift for neighbouring apps.\n     * The focused card keeps the launcher's own animation and glass highlight.\n     * Only attached dock holders are touched; grid cells and offscreen tiles stay unchanged.\n     */\n    private void animateDockNeighbors(int focusPosition) {\n        if (!dockRow || !animations || reducedMotion || grid == null || adapter == null) return;\n        final int visibleDockCount = Math.min(COLUMNS, adapter.appCount());\n        for (int i = 0; i < visibleDockCount; i++) {\n            RecyclerView.ViewHolder holder = grid.findViewHolderForAdapterPosition(i);\n            if (holder == null) continue;\n            View card = holder.itemView.findViewById(R.id.card);\n            if (card == null || card.getVisibility() != View.VISIBLE || card.isFocused()) continue;\n            int distance = focusPosition >= 0 && focusPosition < COLUMNS\n                    ? Math.abs(i - focusPosition) : 100;\n            float scale = distance == 1 ? 1.060f : (distance == 2 ? 1.025f : 1f);\n            float lift = distance == 1 ? -4f * density\n                    : (distance == 2 ? -2f * density : 0f);\n            card.animate().cancel();\n            card.animate()\n                    .scaleX(scale).scaleY(scale)\n                    .translationY(lift)\n                    .setDuration(200L)\n                    .setInterpolator(new android.view.animation.DecelerateInterpolator(1.4f))\n                    .start();\n        }\n    }\n\n" + '    /** Refits the glass to the focused holder once the grid layout and tile dimensions settle. */',
+              ),
+          ]
+          for original, replacement in changes:
+              count = s.count(original)
+              if count != 1:
+                  raise SystemExit(f'Source changed: expected exactly one match, got {count}: {original[:80]!r}')
+              s = s.replace(original, replacement, 1)
+          p.write_text(s, encoding='utf-8')
+          print('Dock animation added to MainActivity.java')
+          PY
+      - name: Build a separate APK (keep existing Home intact)
+        working-directory: launcher
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon -PlauncherApplicationId=com.gathin.tvhome.iosdock testReleaseUnitTest lintRelease assembleRelease
+      - name: Upload preview APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CleanYourTV-iOS-Dock-Preview
+          path: launcher/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
