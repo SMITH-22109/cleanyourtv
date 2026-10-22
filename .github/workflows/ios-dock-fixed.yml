@@ -1,0 +1,89 @@
+name: iOS Dock Preview Fixed
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/ios-dock-fixed.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ios-dock-preview:
+    name: Build separate iOS Dock APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platforms;android-34 build-tools;34.0.0
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Add iOS-inspired motion to neighbouring dock apps
+        run: |
+          from pathlib import Path
+
+          p = Path("launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java")
+          s = p.read_text(encoding="utf-8")
+
+          focus_old = "            if (!onTile) hideGlass();"
+          focus_new = """            if (!onTile) {
+                          hideGlass();
+                          animateDockNeighbors(-1);
+                      }"""
+          tile_old = ("        View item = (View) card.getParent();\n"
+                      "        if (dockRow && position < COLUMNS) {")
+          tile_new = "        animateDockNeighbors(position);\n" + tile_old
+
+          anchor = "    /** Refits the glass to the focused holder once the grid layout and tile dimensions settle. */"
+          method = """
+              /** A subtle iOS-inspired wave across neighbouring dock icons. */
+              private void animateDockNeighbors(int focusPosition) {
+                  if (!dockRow || !animations || reducedMotion || grid == null || adapter == null) return;
+                  int visible = Math.min(COLUMNS, adapter.appCount());
+                  for (int i = 0; i < visible; i++) {
+                      RecyclerView.ViewHolder holder = grid.findViewHolderForAdapterPosition(i);
+                      if (holder == null) continue;
+                      View card = holder.itemView.findViewById(R.id.card);
+                      if (card == null || card.getVisibility() != View.VISIBLE || card.isFocused()) continue;
+                      int distance = focusPosition >= 0 && focusPosition < COLUMNS
+                              ? Math.abs(i - focusPosition) : 100;
+                      float scale = distance == 1 ? 1.06f : (distance == 2 ? 1.025f : 1f);
+                      float lift = distance == 1 ? -4f * density
+                              : (distance == 2 ? -2f * density : 0f);
+                      card.animate().cancel();
+                      card.animate().scaleX(scale).scaleY(scale).translationY(lift)
+                              .setDuration(200L)
+                              .setInterpolator(new android.view.animation.DecelerateInterpolator(1.4f))
+                              .start();
+                  }
+              }
+
+          """
+          for name, before, after in (
+              ("global focus", focus_old, focus_new),
+              ("tile focus", tile_old, tile_new),
+              ("new method", anchor, method + anchor),
+          ):
+              matches = s.count(before)
+              if matches != 1:
+                  raise SystemExit(f"{name}: expected 1 source match, found {matches}")
+              s = s.replace(before, after, 1)
+
+          p.write_text(s, encoding="utf-8")
+          print("Added iOS-inspired dock animation")
+      - name: Build a separate APK
+        working-directory: launcher
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon -PlauncherApplicationId=com.gathin.tvhome.iosdock testReleaseUnitTest lintRelease assembleRelease
+      - name: Upload preview APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CleanYourTV-iOS-Dock-Preview
+          path: launcher/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
